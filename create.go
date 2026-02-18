@@ -12,8 +12,8 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,6 +25,8 @@ type Creator struct {
 	certfile, keyfile string
 }
 
+// NewCreator creates a new Creator that can be used to create new certificates signed by the CA in the Creator.
+// The CA certificate and private key files must be in PEM format.
 func NewCreator(caCertFile, caPvtKeyFile string) (*Creator, error) {
 	var err error
 	c := new(Creator)
@@ -39,12 +41,14 @@ func NewCreator(caCertFile, caPvtKeyFile string) (*Creator, error) {
 	return c, nil
 }
 
-// MakeNew will create a new certificate and key-pair and sign the certificate with the CA in a Creator
-// Values must be supplied for keyusage and extkeyusage.  For example:
-// keyusage = x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment
-// extkeyusage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}
-func (c *Creator) MakeNew(subject pkix.Name, age time.Duration, keysize int, keyusage x509.KeyUsage,
-	extkeyusage []x509.ExtKeyUsage) (newcert, newkey []byte, err error) {
+// MakeNew will create a new certificate and key-pair and sign the certificate with the CA in a Creator.
+// Required are the subject parameter, the age of the certificate, and the key size.
+// SANs (Subject Alternative Names) are included in the certificate, and can be specified by the dnsNames parameter
+// and or the IPs parameter.  The dnsNames parameter is a slice of strings that contains the DNS names
+// that should be included in the certificate.  The IPs parameter is a slice of net.IP that contains the IP addresses
+// that should be included in the certificate.  Usually one or both of these parameters are used to specify the
+// Subject Alternative Names (SANs) for the certificate.  Using nil for both parameters will result in an empty SANs list.
+func (c *Creator) MakeNew(subject pkix.Name, age time.Duration, keysize int, dnsNames []string, IPs []net.IP) (newcert, newkey []byte, err error) {
 	var (
 		serialNumber          *big.Int
 		certBytes             []byte
@@ -62,8 +66,10 @@ func (c *Creator) MakeNew(subject pkix.Name, age time.Duration, keysize int, key
 		Subject:      subject,
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().Add(age),
-		ExtKeyUsage:  extkeyusage,
-		KeyUsage:     keyusage,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		DNSNames:     dnsNames,
+		IPAddresses:  IPs,
 	}
 	if cert.SubjectKeyId, err = generateSubjectKeyID(pub); err != nil {
 		return
@@ -85,24 +91,24 @@ func (c *Creator) MakeNew(subject pkix.Name, age time.Duration, keysize int, key
 	return
 }
 
-func LoadCert(path string, basename string) (cert, key []byte, err error) {
-	cert, err = ioutil.ReadFile(filepath.Join(path, fmt.Sprintf("%s.crt", basename)))
-	if err == nil {
-		key, err = ioutil.ReadFile(filepath.Join(path, fmt.Sprintf("%s.key", basename)))
-	}
-	return
-}
-
+// SaveCert saves the certificate and private key to the specified path with the given basename.
+// The certificate is saved as `basename.crt` and the private key as `basename.key`.
+// Basename may contain a path, e.g. '/var/xxx/certificates/myCertificate', but then path should be empty, else
+// path will be prepended to the path in basename.
+// In all cases the resultant path must exist already.
 func SaveCert(cert, key []byte, path string, basename string) error {
-	err := ioutil.WriteFile(filepath.Join(path, fmt.Sprintf("%s.crt", basename)), cert, os.ModePerm)
+	if ext := filepath.Ext(basename); ext != "" {
+		basename = basename[:len(basename)-len(ext)] // remove extension if any
+	}
+	err := os.WriteFile(filepath.Join(path, fmt.Sprintf("%s.crt", basename)), cert, os.ModePerm)
 	if err == nil {
-		err = ioutil.WriteFile(filepath.Join(path, fmt.Sprintf("%s.key", basename)), key, os.ModePerm)
+		err = os.WriteFile(filepath.Join(path, fmt.Sprintf("%s.key", basename)), key, os.ModePerm)
 	}
 	return err
 }
 
-// GenerateSubjectKeyID generates SubjectKeyId used in Certificate
-// Id is 160-bit SHA-1 hash of the value of the BIT STRING subjectPublicKey
+// generateSubjectKeyID generates SubjectKeyId used in a Certificate.
+// The ID is a 160-bit SHA-1 hash of the BIT STRING subjectPublicKey.
 func generateSubjectKeyID(pub crypto.PublicKey) ([]byte, error) {
 	// rsaPublicKey reflects the ASN.1 structure of a PKCS#1 public key.
 	type rsaPublicKey struct {
