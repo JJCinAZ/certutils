@@ -1,4 +1,4 @@
-module certutils
+module github.com/jjcinaz/certutils
 
 go 1.25.6
 
